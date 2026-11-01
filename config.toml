@@ -1,0 +1,72 @@
+# Keychron K5 Max layout indicator.
+#
+# Color: [R, G, B] or "#RRGGBB".
+# Key names are the ones listed in [device] keys below (case does not matter).
+#
+# [common] applies to every layout, then the layout's own section on top of it.
+# Inside a section later lines override earlier ones. Keys left out stay dark.
+
+[device]
+# USB ID of the keyboard. `k5max-indicator.exe --list` shows the ones that are connected.
+vid = 0x3434
+pid = 0x0A50
+# One name per LED, in the order of the firmware's LED index (g_led_config in the
+# keyboard's rgb.c). Rows below are only for reading, any whitespace works.
+# Use _ for an LED that no key name should address, such as underglow.
+# `k5max-indicator.exe --probe` compares the number of names with the LED count
+# the keyboard reports. Restart the app after changing anything in this section.
+keys = '''
+ESC F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F12   PRTSC CORTANA LIGHT M1 M2 M3 M4
+` 1 2 3 4 5 6 7 8 9 0 - = BACKSPACE   INS HOME PGUP   NUM P/ P* P-
+TAB Q W E R T Y U I O P [ ] \   DEL END PGDN   P7 P8 P9 P+
+CAPS A S D F G H J K L ; ' ENTER   P4 P5 P6
+LSHIFT Z X C V B N M , . / RSHIFT   UP   P1 P2 P3 PENTER
+LCTRL LWIN LALT SPACE RALT MENU FN RCTRL   LEFT DOWN RIGHT   P0 P.
+'''
+
+[settings]
+# Layout to show for a language without a [layouts.*] section.
+# Remove the line to keep the current colors in that case.
+unknown_layout = "US"
+# How often to check the keyboard and repaint it.
+heartbeat_seconds = 30
+# Return to the keyboard's own lighting effect on exit.
+restore_on_exit = true
+# Write k5max-indicator.log next to the exe. Reload config applies it at once.
+log = true
+
+[groups]
+letters = "Q E R T Y U I O P F G H J K L Z X C V B N M ; ' , . /"
+numbers = "1 2 3 4 5 6 7 8 9 0"
+gaming = "W A S D UP LEFT DOWN RIGHT"
+modifiers = "` - = TAB [ ] \\ CAPS LSHIFT RSHIFT LCTRL RCTRL LALT RALT LWIN SPACE MENU FN"
+actions = "ESC ENTER BACKSPACE DEL PRTSC CORTANA LIGHT M1 M2 M3 M4"
+f1_f4 = "F1 F2 F3 F4"
+f5_f8 = "F5 F6 F7 F8"
+f9_f10 = "F9 F10"
+f11_f12 = "F11 F12"
+navigation = "HOME END PGUP PGDN"
+numpad = "NUM P/ P* P- P7 P8 P9 P+ P4 P5 P6 P1 P2 P3 PENTER P0 P."
+
+[common]
+modifiers = [0, 0, 255]
+actions = [255, 165, 0]
+f1_f4 = [255, 192, 203]
+f5_f8 = [128, 255, 128]
+f9_f10 = [200, 100, 255]
+f11_f12 = [0, 128, 255]
+INS = [0, 128, 255]
+navigation = [128, 0, 255]
+numpad = [255, 255, 255]
+
+[layouts.US]
+lang = 0x0409
+letters = [0, 255, 255]
+numbers = [64, 255, 64]
+gaming = [255, 128, 128]
+
+[layouts.RU]
+lang = 0x0419
+letters = [255, 0, 0]
+numbers = [255, 255, 0]
+gaming = [255, 64, 64]
