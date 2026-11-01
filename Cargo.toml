@@ -9,7 +9,7 @@ publish = false
 [dependencies]
 toml = { version = "1", default-features = false, features = ["parse", "preserve_order", "serde", "std"] }
 
-[dependencies.windows-sys]
+[target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.61"
 features = [
     "Win32_Devices_DeviceAndDriverInstallation",

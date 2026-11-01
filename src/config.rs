@@ -1,6 +1,7 @@
 //! `config.toml`: device description, key groups and per-layout colors.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::time::Duration;
 
 use toml::{Table, Value};
@@ -14,6 +15,8 @@ pub type Frame = Vec<Color>;
 const UNNAMED: &str = "_";
 /// The protocol addresses LEDs with one byte.
 const MAX_LEDS: usize = 255;
+/// Keys of a `[layouts.*]` section that are not colors.
+const LAYOUT_FIELDS: [&str; 2] = ["lang", "input_source"];
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Device {
@@ -23,10 +26,42 @@ pub struct Device {
     pub keys: Vec<String>,
 }
 
+/// The keyboard layout as the platform reports it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Input {
+    /// Windows language ID.
+    Lang(u16),
+    /// macOS input source ID, such as `com.apple.keylayout.US`. Only the macOS shell
+    /// builds it.
+    #[cfg_attr(windows, allow(dead_code))]
+    Source(String),
+}
+
+impl fmt::Display for Input {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Input::Lang(lang) => write!(f, "language {lang:04X}"),
+            Input::Source(id) => write!(f, "source {id}"),
+        }
+    }
+}
+
 pub struct Layout {
     pub name: String,
-    pub lang: u16,
+    /// Windows language ID, from `lang`.
+    pub lang: Option<u16>,
+    /// macOS input source ID, from `input_source`.
+    pub source: Option<String>,
     pub frame: Frame,
+}
+
+impl Layout {
+    fn matches(&self, input: &Input) -> bool {
+        match input {
+            Input::Lang(lang) => self.lang == Some(*lang),
+            Input::Source(id) => self.source.as_deref() == Some(id),
+        }
+    }
 }
 
 pub struct Config {
@@ -62,10 +97,10 @@ impl Leds {
 }
 
 impl Config {
-    pub fn layout_for(&self, lang: u16) -> Option<usize> {
+    pub fn layout_for(&self, input: &Input) -> Option<usize> {
         self.layouts
             .iter()
-            .position(|layout| layout.lang == lang)
+            .position(|layout| layout.matches(input))
             .or(self.unknown_layout)
     }
 
@@ -85,15 +120,33 @@ impl Config {
                 .ok_or_else(|| format!("[layouts.{name}] must be a table"))?;
             let lang = colors
                 .get("lang")
-                .and_then(Value::as_integer)
-                .and_then(|lang| u16::try_from(lang).ok())
-                .ok_or_else(|| format!("[layouts.{name}]: missing or invalid 'lang'"))?;
+                .map(|value| {
+                    value
+                        .as_integer()
+                        .and_then(|lang| u16::try_from(lang).ok())
+                        .ok_or_else(|| format!("[layouts.{name}]: invalid 'lang'"))
+                })
+                .transpose()?;
+            let source = colors
+                .get("input_source")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| format!("[layouts.{name}]: 'input_source' must be a string"))
+                })
+                .transpose()?;
+            if lang.is_none() && source.is_none() {
+                return Err(format!(
+                    "[layouts.{name}]: needs 'lang' (Windows) or 'input_source' (macOS)"
+                ));
+            }
 
             let mut frame = vec![[0; 3]; leds.count];
             apply(&mut frame, common, &leds, &groups).map_err(|err| format!("[common]: {err}"))?;
             apply(&mut frame, colors, &leds, &groups)
                 .map_err(|err| format!("[layouts.{name}]: {err}"))?;
-            layouts.push(Layout { name: name.clone(), lang, frame });
+            layouts.push(Layout { name: name.clone(), lang, source, frame });
         }
         if layouts.is_empty() {
             return Err("no [layouts.*] sections".into());
@@ -192,7 +245,7 @@ fn apply(
     leds: &Leds,
     groups: &HashMap<String, Vec<usize>>,
 ) -> Result<(), String> {
-    for (name, value) in colors.iter().filter(|(name, _)| *name != "lang") {
+    for (name, value) in colors.iter().filter(|(name, _)| !LAYOUT_FIELDS.contains(&name.as_str())) {
         let color = parse_color(value).ok_or_else(|| format!("bad color for '{name}'"))?;
         if let Some(members) = groups.get(name) {
             for &led in members {
@@ -246,8 +299,8 @@ mod tests {
     #[test]
     fn default_config_matches_node_version() {
         let config = Config::parse(DEFAULT_CONFIG).unwrap();
-        let us = config.layout_for(0x0409).unwrap();
-        let ru = config.layout_for(0x0419).unwrap();
+        let us = config.layout_for(&Input::Lang(0x0409)).unwrap();
+        let ru = config.layout_for(&Input::Lang(0x0419)).unwrap();
         assert_eq!(hex(&config.layouts[us].frame), golden(include_str!("../testdata/golden_US.txt")));
         assert_eq!(hex(&config.layouts[ru].frame), golden(include_str!("../testdata/golden_RU.txt")));
     }
@@ -279,7 +332,7 @@ lang = 1
     #[test]
     fn unknown_language_uses_fallback() {
         let config = Config::parse(DEFAULT_CONFIG).unwrap();
-        assert_eq!(config.layouts[config.layout_for(0x0407).unwrap()].name, "US");
+        assert_eq!(config.layouts[config.layout_for(&Input::Lang(0x0407)).unwrap()].name, "US");
     }
 
     #[test]
@@ -289,7 +342,38 @@ lang = 1
                 .unwrap();
         let frame = &config.layouts[0].frame;
         assert_eq!(frame, &[[1, 2, 3], [9, 9, 9], [0, 0, 0]]);
-        assert_eq!(config.layout_for(2), None);
+        assert_eq!(config.layout_for(&Input::Lang(2)), None);
+    }
+
+    #[test]
+    fn layouts_match_by_language_or_by_input_source() {
+        let config = tiny(
+            "[layouts.A]
+lang = 0x0409
+input_source = 'com.apple.keylayout.US'
+             [layouts.B]
+input_source = 'com.apple.keylayout.Russian'
+",
+        )
+        .unwrap();
+        let found = |input: Input| config.layout_for(&input).map(|index| &*config.layouts[index].name);
+        assert_eq!(found(Input::Lang(0x0409)), Some("A"));
+        assert_eq!(found(Input::Source("com.apple.keylayout.US".into())), Some("A"));
+        assert_eq!(found(Input::Source("com.apple.keylayout.Russian".into())), Some("B"));
+        assert_eq!(found(Input::Lang(0x0419)), None);
+        assert_eq!(Input::Lang(0x409).to_string(), "language 0409");
+    }
+
+    #[test]
+    fn a_layout_needs_some_way_to_be_recognized() {
+        let err = tiny("[layouts.X]
+W = [1, 2, 3]
+").err().unwrap();
+        assert!(err.contains("layouts.X") && err.contains("input_source"), "{err}");
+        let err = tiny("[layouts.X]
+lang = 'en'
+").err().unwrap();
+        assert!(err.contains("invalid 'lang'"), "{err}");
     }
 
     #[test]

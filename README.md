@@ -170,6 +170,12 @@ cargo test
 
 The tests cover the connection logic against a fake keyboard (stale handle after hibernation, silent device, resume, repeated heartbeats, wrong LED count), the config parsing, and compare the generated frames with reference dumps in `testdata/`.
 
+### Source layout
+
+The code that does not depend on the operating system is shared: `config.rs` (parsing), `device.rs` (protocol and reconnecting) and `controller.rs` (the layout on display, config reload, the engine thread). Everything OS specific is in `src/platform/<os>/`, and only `windows` exists so far.
+
+On other systems the crate builds with a stub (`platform/unsupported.rs`), so `cargo test` runs the portable tests there, but the app itself reports that the system is not supported. A new platform provides the functions listed at the top of `src/platform/mod.rs`: raw HID access, a tray or menu bar shell that tells the controller which layout is active, and autostart. In `config.toml` a layout's `lang` is the Windows language ID, and `input_source` is the macOS input source ID (for example `com.apple.keylayout.US`). Each platform reads its own field and ignores the other.
+
 ## License
 
 [MIT](LICENSE). The firmware is a separate project with its own terms.

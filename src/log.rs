@@ -3,11 +3,10 @@
 use std::fmt::Arguments;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::mem::zeroed;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+use crate::platform::timestamp;
 
 const MAX_LOG_SIZE: u64 = 1024 * 1024;
 
@@ -65,12 +64,7 @@ pub fn write(args: Arguments) {
 fn append(state: &mut State, args: Arguments) {
     let Some(target) = state.file.as_mut() else { return };
 
-    let mut time = unsafe { zeroed() };
-    unsafe { GetLocalTime(&mut time) };
-    let line = format!(
-        "{}-{:02}-{:02} {:02}:{:02}:{:02} {args}\n",
-        time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond
-    );
+    let line = format!("{} {args}\n", timestamp());
     let _ = target.file.write_all(line.as_bytes());
     target.size += line.len() as u64;
 

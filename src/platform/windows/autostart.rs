@@ -13,7 +13,7 @@ use windows_sys::Win32::System::Registry::{
     RRF_RT_REG_BINARY, RRF_RT_REG_SZ,
 };
 
-use crate::app::wide;
+use super::wide;
 
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 // Task Manager's own switch. Turning an entry off there leaves the Run value in place

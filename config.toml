@@ -59,14 +59,18 @@ INS = [0, 128, 255]
 navigation = [128, 0, 255]
 numpad = [255, 255, 255]
 
+# lang: Windows language ID. input_source: macOS input source ID. Each platform
+# reads its own field and ignores the other.
 [layouts.US]
 lang = 0x0409
+input_source = "com.apple.keylayout.US"
 letters = [0, 255, 255]
 numbers = [64, 255, 64]
 gaming = [255, 128, 128]
 
 [layouts.RU]
 lang = 0x0419
+input_source = "com.apple.keylayout.Russian"
 letters = [255, 0, 0]
 numbers = [255, 255, 0]
 gaming = [255, 64, 64]

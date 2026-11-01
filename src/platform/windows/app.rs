@@ -1,13 +1,10 @@
 //! Hidden window: layout polling, device and power notifications, tray icon.
 
 use std::cell::RefCell;
+use std::io;
 use std::mem::{size_of, zeroed};
 use std::path::PathBuf;
 use std::ptr::{null, null_mut};
-use std::sync::mpsc::{self, Sender};
-use std::thread::{self, JoinHandle};
-use std::time::Instant;
-use std::{fs, io};
 
 use windows_sys::core::GUID;
 use windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_GetHidGuid;
@@ -22,10 +19,11 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-use crate::autostart;
-use crate::config::Config;
-use crate::device::{self, Cmd, Engine};
-use crate::hid::HidDevice;
+use super::hid::HidDevice;
+use super::{autostart, message_box, wide};
+use crate::config::{Config, Input};
+use crate::controller::Controller;
+use crate::device::Cmd;
 use crate::log;
 
 const WM_STATUS: u32 = WM_APP + 1;
@@ -43,13 +41,7 @@ const COLOR_DISCONNECTED: [u8; 3] = [130, 130, 130];
 
 struct App {
     hwnd: HWND,
-    commands: Sender<Cmd>,
-    worker: Option<JoinHandle<()>>,
-    config: Config,
-    config_path: PathBuf,
-    lang: Option<u16>,
-    layout: Option<usize>,
-    connected: bool,
+    controller: Controller,
     icons: [HICON; 2],
     taskbar_created: u32,
 }
@@ -65,42 +57,24 @@ fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
     APP.with_borrow_mut(|app| app.as_mut().map(f))
 }
 
-pub fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain(Some(0)).collect()
-}
-
-pub fn message_box(text: &str) {
-    let (text, title) = (wide(text), wide("K5 Max Indicator"));
-    unsafe { MessageBoxW(null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR) };
-}
-
 pub fn run(config: Config, config_path: PathBuf) -> io::Result<()> {
     let hwnd = unsafe { create_window()? };
     register_device_notifications(hwnd)?;
 
-    let (commands, receiver) = mpsc::channel();
     let hwnd_value = hwnd as usize;
     let (vid, pid) = (config.device.vid, config.device.pid);
-    let engine = Engine::new(
+    let controller = Controller::start(
+        config,
+        config_path,
         move || HidDevice::open(vid, pid),
         move |connected| unsafe {
             PostMessageW(hwnd_value as HWND, WM_STATUS, connected as WPARAM, 0);
         },
-        config.heartbeat,
-        config.device.keys.len(),
-        Instant::now(),
     );
-    let worker = thread::spawn(move || device::run(engine, receiver));
 
     let app = App {
         hwnd,
-        commands,
-        worker: Some(worker),
-        config,
-        config_path,
-        lang: None,
-        layout: None,
-        connected: false,
+        controller,
         icons: [make_icon(COLOR_DISCONNECTED), make_icon(COLOR_CONNECTED)],
         taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
     };
@@ -118,12 +92,8 @@ pub fn run(config: Config, config_path: PathBuf) -> io::Result<()> {
     }
 
     update_tray(NIM_DELETE);
-    if let Some(mut app) = APP.take() {
-        let restore = app.config.restore_on_exit;
-        let _ = app.commands.send(Cmd::Shutdown { restore });
-        if let Some(worker) = app.worker.take() {
-            let _ = worker.join();
-        }
+    if let Some(app) = APP.take() {
+        app.controller.stop();
     }
     Ok(())
 }
@@ -192,19 +162,19 @@ unsafe extern "system" fn window_proc(
         }
         WM_DEVICECHANGE => {
             if matches!(wparam as u32, DBT_DEVICEARRIVAL | DBT_DEVICEREMOVECOMPLETE) {
-                with_app(|app| app.send(Cmd::DevicesChanged));
+                with_app(|app| app.controller.notify(Cmd::DevicesChanged));
             }
             1
         }
         WM_POWERBROADCAST => {
             if matches!(wparam as u32, PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND) {
                 log!("system resumed");
-                with_app(|app| app.send(Cmd::Resumed));
+                with_app(|app| app.controller.notify(Cmd::Resumed));
             }
             1
         }
         WM_STATUS => {
-            with_app(|app| app.connected = wparam != 0);
+            with_app(|app| app.controller.set_connected(wparam != 0));
             update_tray(NIM_MODIFY);
             0
         }
@@ -229,7 +199,7 @@ unsafe extern "system" fn window_proc(
 }
 
 unsafe fn show_menu(hwnd: HWND) {
-    let Some(status) = with_app(|app| app.status_text()) else { return };
+    let Some(status) = with_app(|app| app.controller.status_text()) else { return };
     let autostart_on = autostart::is_enabled();
     let autostart_flags = if autostart_on { MF_STRING | MF_CHECKED } else { MF_STRING };
     let menu = CreatePopupMenu();
@@ -257,7 +227,7 @@ unsafe fn show_menu(hwnd: HWND) {
             }
         },
         MENU_RELOAD => {
-            match with_app(App::reload_config) {
+            match with_app(|app| app.controller.reload_config()) {
                 Some(Ok(())) => update_tray(NIM_MODIFY),
                 Some(Err(err)) => {
                     log!("config reload failed: {err}");
@@ -274,7 +244,8 @@ unsafe fn show_menu(hwnd: HWND) {
 }
 
 fn poll_layout() {
-    if with_app(App::poll_layout) == Some(true) {
+    let Some(lang) = foreground_lang() else { return };
+    if with_app(|app| app.controller.input_changed(Input::Lang(lang))) == Some(true) {
         update_tray(NIM_MODIFY);
     }
 }
@@ -286,58 +257,6 @@ fn update_tray(action: u32) {
 }
 
 impl App {
-    fn send(&self, cmd: Cmd) {
-        let _ = self.commands.send(cmd);
-    }
-
-    /// Returns true when the displayed layout changed.
-    fn poll_layout(&mut self) -> bool {
-        let Some(lang) = foreground_lang() else { return false };
-        if self.lang == Some(lang) {
-            return false;
-        }
-        self.lang = Some(lang);
-        log!("input language {lang:04X}");
-
-        let Some(index) = self.config.layout_for(lang) else {
-            log!("no layout configured for it, keeping the current colors");
-            return false;
-        };
-        if self.layout == Some(index) {
-            return false;
-        }
-        self.layout = Some(index);
-        let layout = &self.config.layouts[index];
-        log!("layout {}", layout.name);
-        self.send(Cmd::Frame(layout.frame.clone()));
-        true
-    }
-
-    fn reload_config(&mut self) -> Result<(), String> {
-        let text = fs::read_to_string(&self.config_path).map_err(|err| err.to_string())?;
-        let config = Config::parse(&text)?;
-        // The link was opened for this device and frames are sized for this key list.
-        if config.device != self.config.device {
-            return Err("[device] changed, restart the app to apply it".into());
-        }
-        self.config = config;
-        log::set_enabled(self.config.log);
-        log!("config reloaded");
-        self.send(Cmd::Heartbeat(self.config.heartbeat));
-        self.lang = None;
-        self.layout = None;
-        self.poll_layout();
-        Ok(())
-    }
-
-    fn status_text(&self) -> String {
-        let link = if self.connected { "connected" } else { "not connected" };
-        match self.layout {
-            Some(index) => format!("K5 Max: {link}, {}", self.config.layouts[index].name),
-            None => format!("K5 Max: {link}"),
-        }
-    }
-
     fn tray_data(&self) -> NOTIFYICONDATAW {
         unsafe {
             let mut data: NOTIFYICONDATAW = zeroed();
@@ -345,8 +264,8 @@ impl App {
             data.hWnd = self.hwnd;
             data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
             data.uCallbackMessage = WM_TRAY;
-            data.hIcon = self.icons[self.connected as usize];
-            let tip = wide(&self.status_text());
+            data.hIcon = self.icons[self.controller.connected() as usize];
+            let tip = wide(&self.controller.status_text());
             let len = tip.len().min(data.szTip.len() - 1);
             data.szTip[..len].copy_from_slice(&tip[..len]);
             data

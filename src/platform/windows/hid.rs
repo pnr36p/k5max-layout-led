@@ -28,6 +28,7 @@ use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED
 use windows_sys::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
 
 use crate::device::{Link, PACKET_LEN};
+use crate::platform::Interface;
 
 const RAW_USAGE_PAGE: u16 = 0xFF60;
 const RAW_USAGE: u16 = 0x61;
@@ -159,27 +160,15 @@ impl Drop for HidDevice {
     }
 }
 
-/// What a HID interface reports about itself.
-pub struct Interface {
-    pub vid: u16,
-    pub pid: u16,
-    pub usage_page: u16,
-    pub usage: u16,
-    pub output_report_len: u16,
-    pub product: String,
-}
-
-impl Interface {
-    fn is_qmk_raw(&self) -> bool {
-        self.usage_page == RAW_USAGE_PAGE && self.usage == RAW_USAGE
-    }
+fn is_qmk_raw(interface: &Interface) -> bool {
+    interface.usage_page == RAW_USAGE_PAGE && interface.usage == RAW_USAGE
 }
 
 /// Raw HID interfaces of all connected devices, for finding the USB ID of a keyboard.
 pub fn list_raw_interfaces() -> io::Result<Vec<Interface>> {
     let mut found = Vec::new();
     for_each_interface(|path| {
-        found.extend(describe(path).filter(Interface::is_qmk_raw));
+        found.extend(describe(path).filter(is_qmk_raw));
         None::<()>
     })?;
     Ok(found)
@@ -191,7 +180,7 @@ fn find_raw_interface(vid: u16, pid: u16) -> io::Result<Option<Vec<u16>>> {
         let interface = describe(path)?;
         let matched = interface.vid == vid
             && interface.pid == pid
-            && interface.is_qmk_raw()
+            && is_qmk_raw(&interface)
             && interface.output_report_len as usize == REPORT_LEN;
         matched.then(|| path.to_vec())
     })
